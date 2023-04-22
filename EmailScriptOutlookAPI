@@ -1,0 +1,130 @@
+import base64
+import json
+import os.path
+import sqlite3
+import time
+
+import adal
+import requests
+
+
+# Enter the client ID, client secret, and tenant ID for your Azure AD app.
+CLIENT_ID = '<your-client-id>'
+CLIENT_SECRET = '<your-client-secret>'
+TENANT_ID = '<your-tenant-id>'
+
+# Enter the email address of the sender.
+FROM_ADDRESS = '<your-email-address>'
+
+# Enter the subject and body of the email.
+SUBJECT = 'Test email'
+BODY = 'This is a test email.'
+
+
+def send_email(to):
+    """
+    Sends an email to the specified recipient.
+    """
+    # Get an access token using the Azure AD app credentials.
+    token = get_access_token()
+
+    # Create a message.
+    message = create_message(to, SUBJECT, BODY)
+
+    # Send the message using the Outlook API.
+    response = requests.post(
+        'https://graph.microsoft.com/v1.0/me/sendMail',
+        headers={
+            'Authorization': f'Bearer {token["access_token"]}',
+            'Content-Type': 'application/json'
+        },
+        json={
+            'message': message,
+            'saveToSentItems': 'true'
+        }
+    )
+
+    # Check if the email was sent successfully.
+    if response.status_code == 202:
+        message_id = response.headers['Location'].split('/')[-1]
+        print(f'Sent message to {to} (Message Id: {message_id})')
+        # Save the message to the database.
+        save_message_to_db(to, SUBJECT, BODY, message_id)
+    else:
+        print(f'An error occurred: {response.text}')
+
+
+def create_message(to, subject, body):
+    """
+    Creates a message for an email.
+    """
+    return {
+        'subject': subject,
+        'body': {
+            'contentType': 'Text',
+            'content': body
+        },
+        'toRecipients': [
+            {
+                'emailAddress': {
+                    'address': to
+                }
+            }
+        ],
+        'from': {
+            'emailAddress': {
+                'address': FROM_ADDRESS
+            }
+        },
+        'isReadReceiptRequested': True,
+        'isDeliveryReceiptRequested': True,
+        'internetMessageHeaders': [
+            {
+                'name': 'List-Unsubscribe',
+                'value': '<mailto:unsubscribe@example.com>'
+            }
+        ]
+    }
+
+
+def track_open(event):
+    """
+    Tracks when an email is opened by the recipient.
+    """
+    # Extract the message ID from the event.
+    message_id = event['MessageId']
+
+    # Save the open event to the database.
+    save_open_to_db(message_id)
+
+    return 'OK'
+
+
+def track_click(event):
+    """
+    Tracks when a link in the email is clicked by the recipient.
+    """
+    # Extract the message ID and URL from the event.
+    message_id = event['MessageId']
+    url = event['Url']
+
+    # Save the click event to the database.
+    save_click_to_db(message_id, url)
+
+    return 'OK'
+
+
+def get_access_token():
+    """
+    Gets an access token using the Azure AD app credentials.
+    """
+    context = adal.AuthenticationContext(
+        f'https://login.microsoftonline.com/{TENANT_ID}')
+    token = context.acquire_token_with_client_credentials(
+        'https://graph.microsoft.com', CLIENT_ID, CLIENT_SECRET)
+    return token
+
+
+def save_message_to_db(to, subject, body, message_id):
+    """
+    Saves a sent message to the database.

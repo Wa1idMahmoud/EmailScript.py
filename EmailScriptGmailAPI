@@ -1,0 +1,116 @@
+import base64
+import os.path
+import pickle
+import sqlite3
+import time
+import urllib.parse as urlparse
+
+from google.auth.transport.requests import Request
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
+from googleapiclient.errors import HttpError
+from googleapiclient.errors import Error
+
+
+def send_email(to, subject, body):
+    """
+    Sends an email to the specified recipient.
+    """
+    # Load the credentials from the token.pickle file.
+    creds = None
+    if os.path.exists('token.pickle'):
+        with open('token.pickle', 'rb') as token:
+            creds = pickle.load(token)
+    # If there are no (valid) credentials available, let the user log in.
+    if not creds or not creds.valid:
+        if creds and creds.expired and creds.refresh_token:
+            creds.refresh(Request())
+        else:
+            flow = InstalledAppFlow.from_client_secrets_file(
+                'credentials.json', SCOPES)
+            creds = flow.run_local_server(port=0)
+        # Save the credentials for the next run.
+        with open('token.pickle', 'wb') as token:
+            pickle.dump(creds, token)
+
+    # Build the Gmail API service.
+    service = build('gmail', 'v1', credentials=creds)
+
+    # Create a message.
+    message = create_message(to, subject, body)
+
+    try:
+        # Send the message.
+        message = (service.users().messages().send(userId='me', body=message)
+                   .execute())
+        print(f'Sent message to {to} (Message Id: {message["id"]})')
+    except HttpError as error:
+        print(f'An error occurred: {error}')
+        message = None
+
+    # Save the message to the database.
+    save_message_to_db(to, subject, body, message)
+
+    return message
+
+
+def create_message(to, subject, body):
+    """
+    Creates a message for an email.
+    """
+    message = MIMEText(body)
+    message['to'] = to
+    message['subject'] = subject
+    return {'raw': base64.urlsafe_b64encode(message.as_bytes()).decode()}
+
+
+def track_open(event):
+    """
+    Tracks when an email is opened by the recipient.
+    """
+    # Extract the message ID from the URL.
+    url = event['url']
+    query = urlparse.urlparse(url).query
+    params = urlparse.parse_qs(query)
+    message_id = params['message_id'][0]
+
+    # Save the open event to the database.
+    save_open_to_db(message_id)
+
+    return 'OK'
+
+
+def track_click(event):
+    """
+    Tracks when a link in the email is clicked by the recipient.
+    """
+    # Extract the message ID and URL from the event.
+    message_id = event['message_id']
+    url = event['url']
+
+    # Save the click event to the database.
+    save_click_to_db(message_id, url)
+
+    return 'OK'
+
+
+def save_message_to_db(to, subject, body, message):
+    """
+    Saves a sent message to the database.
+    """
+    conn = sqlite3.connect('email.db')
+    cursor = conn.cursor()
+
+    cursor.execute('INSERT INTO sent_messages (to_address, subject, body, message_id) VALUES (?, ?, ?, ?)',
+                   (to, subject, body, message['id']))
+
+    conn.commit()
+    conn.close()
+
+
+def save_open_to_db(message_id):
+    """
+    Saves an email open event to the database.
+    """
+    conn = sqlite3.connect('email.db')
+   
